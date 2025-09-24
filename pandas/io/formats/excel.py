@@ -635,7 +635,22 @@ class ExcelFormatter:
         for lnum, (spans, levels, level_codes) in enumerate(
             zip(level_lengths, columns.levels, columns.codes)
         ):
+            # take the level values for this row of header
             values = levels.take(level_codes)
+
+            # Normalize sub-labels to stable strings so Excel round-trip
+            # preserves header identity (e.g. Interval objects or NaN)
+            conv_values = []
+            for v in values:
+                # Missing values -> literal 'nan' (keeps parity with read_excel)
+                if missing.isna(v):
+                    conv_values.append("nan")
+                # Keep strings as-is, otherwise coerce to str()
+                elif isinstance(v, str):
+                    conv_values.append(v)
+                else:
+                    conv_values.append(str(v))
+
             for i, span_val in spans.items():
                 mergestart, mergeend = None, None
                 if merge_columns and span_val > 1:
@@ -643,7 +658,7 @@ class ExcelFormatter:
                 yield CssExcelCell(
                     row=lnum,
                     col=coloffset + i + 1,
-                    val=values[i],
+                    val=conv_values[i],
                     style=None,
                     css_styles=getattr(self.styler, "ctx_columns", None),
                     css_row=lnum,
