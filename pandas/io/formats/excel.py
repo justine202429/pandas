@@ -118,6 +118,8 @@ class CSSToExcelConverter:
     Operates by first computing CSS styles in a fairly generic
     way (see :meth: `compute_css`) then determining Excel style
     properties from CSS properties (see :meth: `build_xlstyle`).
+    way (see :meth: `compute_css`) then determining Excel style
+    properties from CSS properties (see :meth: `build_xlstyle`).
 
     Parameters
     ----------
@@ -628,10 +630,10 @@ class ExcelFormatter:
             fixed_levels = []
             for lvl in range(columns.nlevels):
                 vals = columns.get_level_values(lvl)
-                fixed_levels.append([NBSP if pd.isna(v) else str(v) for v in vals])
+                fixed_levels.append([NBSP if missing.isna(v) else str(v) for v in vals])
             fixed_columns = MultiIndex.from_arrays(fixed_levels, names=columns.names)
         else:
-            fixed_columns = Index([NBSP if pd.isna(v) else str(v) for v in columns], name=columns.name)
+            fixed_columns = Index([NBSP if missing.isna(v) else str(v) for v in columns], name=columns.name)
 
         level_strs = fixed_columns._format_multi(sparsify=merge_columns, include_names=False)
         level_lengths = get_level_lengths(level_strs)
@@ -642,7 +644,7 @@ class ExcelFormatter:
             coloffset = self.df.index.nlevels - 1
 
         for lnum, name in enumerate(columns.names):
-            val = NBSP if pd.isna(name) else str(name)
+            val = NBSP if missing.isna(name) else str(name)
             yield ExcelCell(
                 row=lnum,
                 col=coloffset,
@@ -651,10 +653,10 @@ class ExcelFormatter:
             )
 
         for lnum, (spans, levels, level_codes) in enumerate(
-            zip(level_lengths, columns.levels, columns.codes, strict=True)
+            zip(level_lengths, fixed_columns.levels, fixed_columns.codes, strict=True)
         ):
             # level.take(codes) on fixed_columns.levels yields string values
-            values = level.take(codes).to_numpy()
+            values = levels.take(level_codes).to_numpy()
 
             for i, span_val in spans.items():
                 mergestart, mergeend = None, None
@@ -672,6 +674,7 @@ class ExcelFormatter:
                     mergestart=mergestart,
                     mergeend=mergeend,
                 )
+
 
         self.rowcounter = lnum
 
@@ -698,7 +701,7 @@ class ExcelFormatter:
             # header output matches console display (same behavior as
             # applied to MultiIndex headers in _format_header_mi).
             NBSP = "\u00A0"
-            colnames = [NBSP if pd.isna(v) else str(v) for v in colnames]
+            colnames = [NBSP if missing.isna(v) else str(v) for v in colnames]
 
             for colindex, colname in enumerate(colnames):
                 yield CssExcelCell(
