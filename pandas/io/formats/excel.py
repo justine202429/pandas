@@ -499,41 +499,9 @@ class CSSToExcelConverter:
         else:
             raise ValueError(f"Unexpected color {color_string}")
 
-
 class ExcelFormatter:
     """
     Class for formatting a DataFrame to a list of ExcelCells,
-
-    Parameters
-    ----------
-    df : DataFrame or Styler
-    na_rep: na representation
-    float_format : str, default None
-        Format string for floating point numbers
-    cols : sequence, optional
-        Columns to write
-    header : bool or sequence of str, default True
-        Write out column names. If a list of string is given it is
-        assumed to be aliases for the column names
-    index : bool, default True
-        output row names (index)
-    index_label : str or sequence, default None
-        Column label for index column(s) if desired. If None is given, and
-        `header` and `index` are True, then the index names are used. A
-        sequence should be given if the DataFrame uses MultiIndex.
-    merge_cells : bool or 'columns', default False
-        Format MultiIndex column headers and Hierarchical Rows as merged cells
-        if True. Merge MultiIndex column headers only if 'columns'.
-        .. versionchanged:: 3.0.0
-            Added the 'columns' option.
-    inf_rep : str, default `'inf'`
-        representation for np.inf values (which aren't representable in Excel)
-        A `'-'` sign will be added in front of -inf.
-    style_converter : callable, optional
-        This translates Styler styles (CSS) into ExcelWriter styles.
-        Defaults to ``CSSToExcelConverter()``.
-        It should have signature css_declarations string -> excel style.
-        This is only called for body cells.
     """
 
     max_rows = 2**20
@@ -556,7 +524,7 @@ class ExcelFormatter:
         self.na_rep = na_rep
         if not isinstance(df, DataFrame):
             self.styler = df
-            self.styler._compute()  # calculate applied styles
+            self.styler._compute()
             df = df.data
             if style_converter is None:
                 style_converter = CSSToExcelConverter()
@@ -566,14 +534,10 @@ class ExcelFormatter:
             self.style_converter = None
         self.df = df
         if cols is not None:
-            # all missing, raise
             if not len(Index(cols).intersection(df.columns)):
                 raise KeyError("passes columns are not ALL present dataframe")
-
             if len(Index(cols).intersection(df.columns)) != len(set(cols)):
-                # Deprecated in GH#17295, enforced in 1.0.0
                 raise KeyError("Not all names specified in 'columns' are found")
-
             self.df = df.reindex(columns=cols)
 
         self.columns = self.df.columns
@@ -581,31 +545,27 @@ class ExcelFormatter:
         self.index = index
         self.index_label = index_label
         self.header = header
-
         if not isinstance(merge_cells, bool) and merge_cells != "columns":
             raise ValueError(f"Unexpected value for {merge_cells=}.")
         self.merge_cells = merge_cells
         self.inf_rep = inf_rep
 
     def _format_value(self, val):
+
         if is_scalar(val) and missing.isna(val):
-            val = self.na_rep
+            return self.na_rep
         elif is_float(val):
             if missing.isposinf_scalar(val):
-                val = self.inf_rep
+                return self.inf_rep
             elif missing.isneginf_scalar(val):
-                val = f"-{self.inf_rep}"
+                return f"-{self.inf_rep}"
             elif self.float_format is not None:
-                val = self.float_format % val
-            else:
-                # respecter l'affichage par défaut de pandas (console)
-                val = repr(val)
-
+                return float(self.float_format % val)
+        
         if getattr(val, "tzinfo", None) is not None:
             raise ValueError(
-                "Excel does not support datetimes with "
-                "timezones. Please ensure that datetimes "
-                "are timezone unaware before writing to Excel."
+                "Excel does not support datetimes with timezones. "
+                "Please ensure that datetimes are timezone unaware before writing to Excel."
             )
         return val
 
@@ -616,26 +576,22 @@ class ExcelFormatter:
                     "Writing to Excel with MultiIndex columns and no "
                     "index ('index'=False) is not yet implemented."
                 )
-
         if not (self._has_aliases or self.header):
             return
 
         columns = self.columns
         merge_columns = self.merge_cells in {True, "columns"}
-
-        # Replace NaN column header values with a non-breaking space so
-        # Excel output matches console display (see user's _fix_headers).
         NBSP = "\u00A0"
-        if isinstance(columns, MultiIndex):
-            fixed_levels = []
-            for lvl in range(columns.nlevels):
-                vals = columns.get_level_values(lvl)
-                fixed_levels.append([NBSP if missing.isna(v) else str(v) for v in vals])
-            fixed_columns = MultiIndex.from_arrays(fixed_levels, names=columns.names)
-        else:
-            fixed_columns = Index([NBSP if missing.isna(v) else str(v) for v in columns], name=columns.name)
 
-        level_strs = fixed_columns._format_multi(sparsify=merge_columns, include_names=False)
+        fixed_levels = []
+        for lvl in range(columns.nlevels):
+            vals = columns.get_level_values(lvl)
+            fixed_levels.append(vals.fillna(NBSP))
+        fixed_columns = MultiIndex.from_arrays(fixed_levels, names=columns.names)
+
+        level_strs = fixed_columns._format_multi(
+            sparsify=merge_columns, include_names=False
+        )
         level_lengths = get_level_lengths(level_strs)
         coloffset = 0
         lnum = 0
@@ -643,21 +599,18 @@ class ExcelFormatter:
         if self.index and isinstance(self.df.index, MultiIndex):
             coloffset = self.df.index.nlevels - 1
 
-        for lnum, name in enumerate(columns.names):
-            val = NBSP if missing.isna(name) else str(name)
+        for lnum, name in enumerate(fixed_columns.names):
             yield ExcelCell(
                 row=lnum,
                 col=coloffset,
-                val=val,
+                val=name,
                 style=None,
             )
 
         for lnum, (spans, levels, level_codes) in enumerate(
             zip(level_lengths, fixed_columns.levels, fixed_columns.codes, strict=True)
         ):
-            # level.take(codes) on fixed_columns.levels yields string values
-            values = levels.take(level_codes).to_numpy()
-
+            values = levels.take(level_codes)
             for i, span_val in spans.items():
                 mergestart, mergeend = None, None
                 if merge_columns and span_val > 1:
@@ -674,19 +627,16 @@ class ExcelFormatter:
                     mergestart=mergestart,
                     mergeend=mergeend,
                 )
-
-
         self.rowcounter = lnum
 
     def _format_header_regular(self) -> Iterable[ExcelCell]:
         if self._has_aliases or self.header:
             coloffset = 0
-
             if self.index:
                 coloffset = 1
                 if isinstance(self.df.index, MultiIndex):
                     coloffset = len(self.df.index.names)
-
+            
             colnames = self.columns
             if self._has_aliases:
                 self.header = cast(Sequence, self.header)
@@ -697,13 +647,10 @@ class ExcelFormatter:
                     )
                 colnames = self.header
 
-            # Normalize NaN column labels to a non-breaking space so Excel
-            # header output matches console display (same behavior as
-            # applied to MultiIndex headers in _format_header_mi).
             NBSP = "\u00A0"
-            colnames = [NBSP if missing.isna(v) else str(v) for v in colnames]
+            output_colnames = colnames.fillna(NBSP)
 
-            for colindex, colname in enumerate(colnames):
+            for colindex, colname in enumerate(output_colnames):
                 yield CssExcelCell(
                     row=self.rowcounter,
                     col=colindex + coloffset,
@@ -716,26 +663,25 @@ class ExcelFormatter:
                 )
 
     def _format_header(self) -> Iterable[ExcelCell]:
-        gen: Iterable[ExcelCell]
-
-        if isinstance(self.columns, MultiIndex):
-            gen = self._format_header_mi()
-        else:
-            gen = self._format_header_regular()
-
-        gen2: Iterable[ExcelCell] = ()
-
-        if self.df.index.names:
-            row = [x if x is not None else "" for x in self.df.index.names] + [
-                ""
-            ] * len(self.columns)
-            if functools.reduce(lambda x, y: x and y, (x != "" for x in row)):
-                gen2 = (
-                    ExcelCell(self.rowcounter, colindex, val, None)
-                    for colindex, val in enumerate(row)
-                )
-                self.rowcounter += 1
-        return itertools.chain(gen, gen2)
+            gen: Iterable[ExcelCell]
+            if isinstance(self.columns, MultiIndex):
+                gen = self._format_header_mi()
+            else:
+                gen = self._format_header_regular()
+                
+            gen2: Iterable[ExcelCell] = ()
+            
+            if self.df.index.names and self.header is not False:
+                row = [x if x is not None else "" for x in self.df.index.names] + [
+                    ""
+                ] * len(self.columns)
+                if functools.reduce(lambda x, y: x and y, (x != "" for x in row)):
+                    gen2 = (
+                        ExcelCell(self.rowcounter, colindex, val, None)
+                        for colindex, val in enumerate(row)
+                    )
+                    self.rowcounter += 1
+            return itertools.chain(gen, gen2)
 
     def _format_body(self) -> Iterable[ExcelCell]:
         if isinstance(self.df.index, MultiIndex):
@@ -746,32 +692,22 @@ class ExcelFormatter:
     def _format_regular_rows(self) -> Iterable[ExcelCell]:
         if self._has_aliases or self.header:
             self.rowcounter += 1
-
-        # output index and index_label?
         if self.index:
-            # check aliases
-            # if list only take first as this is not a MultiIndex
             if self.index_label and isinstance(
                 self.index_label, (list, tuple, np.ndarray, Index)
             ):
                 index_label = self.index_label[0]
-            # if string good to go
             elif self.index_label and isinstance(self.index_label, str):
                 index_label = self.index_label
             else:
                 index_label = self.df.index.names[0]
-
             if isinstance(self.columns, MultiIndex):
                 self.rowcounter += 1
-
             if index_label and self.header is not False:
                 yield ExcelCell(self.rowcounter - 1, 0, index_label, None)
-
-            # write index_values
             index_values = self.df.index
             if isinstance(self.df.index, PeriodIndex):
                 index_values = self.df.index.to_timestamp()
-
             for idx, idxval in enumerate(index_values):
                 yield CssExcelCell(
                     row=self.rowcounter + idx,
@@ -786,104 +722,84 @@ class ExcelFormatter:
             coloffset = 1
         else:
             coloffset = 0
-
         yield from self._generate_body(coloffset)
 
     def _format_hierarchical_rows(self) -> Iterable[ExcelCell]:
-        if self._has_aliases or self.header:
-            self.rowcounter += 1
-
-        gcolidx = 0
-
-        if self.index:
-            index_labels = self.df.index.names
-            # check for aliases
-            if self.index_label and isinstance(
-                self.index_label, (list, tuple, np.ndarray, Index)
-            ):
-                index_labels = self.index_label
-
-            # MultiIndex columns require an extra row
-            # with index names (blank if None) for
-            # unambiguous round-trip, Issue #11328
-            if isinstance(self.columns, MultiIndex):
+            if self._has_aliases or self.header:
                 self.rowcounter += 1
-
-            # if index labels are not empty go ahead and dump
-            if com.any_not_none(*index_labels) and self.header is not False:
-                for cidx, name in enumerate(index_labels):
-                    yield ExcelCell(self.rowcounter - 1, cidx, name, None)
-
-            if self.merge_cells and self.merge_cells != "columns":
-                # Format hierarchical rows as merged cells.
-                level_strs = self.df.index._format_multi(
-                    sparsify=True, include_names=False
-                )
-                level_lengths = get_level_lengths(level_strs)
-
-                for spans, levels, level_codes in zip(
-                    level_lengths,
-                    self.df.index.levels,
-                    self.df.index.codes,
-                    strict=False,
+            gcolidx = 0
+            if self.index:
+                index_labels = self.df.index.names
+                if self.index_label and isinstance(
+                    self.index_label, (list, tuple, np.ndarray, Index)
                 ):
-                    values = levels.take(
-                        level_codes,
-                        allow_fill=levels._can_hold_na,
-                        fill_value=levels._na_value,
+                    index_labels = self.index_label
+                if isinstance(self.columns, MultiIndex):
+                    self.rowcounter += 1
+                if com.any_not_none(*index_labels) and self.header is not False:
+                    for cidx, name in enumerate(index_labels):
+                        yield ExcelCell(self.rowcounter - 1, cidx, name, None)
+                
+                if self.merge_cells and self.merge_cells != "columns":
+                    # Cette partie (pour merge_cells=True) est correcte
+                    level_strs = self.df.index._format_multi(
+                        sparsify=True, include_names=False
                     )
-                    # GH#60099
-                    if isinstance(values[0], Period):
-                        values = values.to_timestamp()
-
-                    for i, span_val in spans.items():
-                        mergestart, mergeend = None, None
-                        if span_val > 1:
-                            mergestart = self.rowcounter + i + span_val - 1
-                            mergeend = gcolidx
-                        yield CssExcelCell(
-                            row=self.rowcounter + i,
-                            col=gcolidx,
-                            val=values[i],
-                            style=None,
-                            css_styles=getattr(self.styler, "ctx_index", None),
-                            css_row=i,
-                            css_col=gcolidx,
-                            css_converter=self.style_converter,
-                            mergestart=mergestart,
-                            mergeend=mergeend,
+                    level_lengths = get_level_lengths(level_strs)
+                    for spans, levels, level_codes in zip(
+                        level_lengths,
+                        self.df.index.levels,
+                        self.df.index.codes,
+                        strict=False,
+                    ):
+                        values = levels.take(
+                            level_codes,
+                            allow_fill=levels._can_hold_na,
+                            fill_value=levels._na_value,
                         )
-                    gcolidx += 1
-
-            else:
-                # Format hierarchical rows with non-merged values.
-                for indexcolvals in zip(*self.df.index, strict=True):
-                    for idx, indexcolval in enumerate(indexcolvals):
-                        # GH#60099
-                        if isinstance(indexcolval, Period):
-                            indexcolval = indexcolval.to_timestamp()
-
-                        yield CssExcelCell(
-                            row=self.rowcounter + idx,
-                            col=gcolidx,
-                            val=indexcolval,
-                            style=None,
-                            css_styles=getattr(self.styler, "ctx_index", None),
-                            css_row=idx,
-                            css_col=gcolidx,
-                            css_converter=self.style_converter,
-                        )
-                    gcolidx += 1
-
-        yield from self._generate_body(gcolidx)
+                        if values.size > 0 and isinstance(values[0], Period):
+                            values = values.to_timestamp()
+                        for i, span_val in spans.items():
+                            mergestart, mergeend = None, None
+                            if span_val > 1:
+                                mergestart = self.rowcounter + i + span_val - 1
+                                mergeend = gcolidx
+                            yield CssExcelCell(
+                                row=self.rowcounter + i,
+                                col=gcolidx,
+                                val=values[i],
+                                style=None,
+                                css_styles=getattr(self.styler, "ctx_index", None),
+                                css_row=i,
+                                css_col=gcolidx,
+                                css_converter=self.style_converter,
+                                mergestart=mergestart,
+                                mergeend=mergeend,
+                            )
+                        gcolidx += 1
+                else:
+                    for indexcolvals in zip(*self.df.index, strict=True):
+                        for idx, indexcolval in enumerate(indexcolvals):
+                            if isinstance(indexcolval, Period):
+                                indexcolval = indexcolval.to_timestamp()
+                            yield CssExcelCell(
+                                row=self.rowcounter + idx,
+                                col=gcolidx,
+                                val=indexcolval,
+                                style=None,
+                                css_styles=getattr(self.styler, "ctx_index", None),
+                                css_row=idx,
+                                css_col=gcolidx,
+                                css_converter=self.style_converter,
+                            )
+                        gcolidx += 1
+            yield from self._generate_body(gcolidx)
 
     @property
     def _has_aliases(self) -> bool:
-        """Whether the aliases for column names are present."""
         return is_list_like(self.header)
 
     def _generate_body(self, coloffset: int) -> Iterable[ExcelCell]:
-        # Write the body of the frame data series by series.
         for colidx in range(len(self.columns)):
             series = self.df.iloc[:, colidx]
             for i, val in enumerate(series):
@@ -915,40 +831,15 @@ class ExcelFormatter:
         storage_options: StorageOptions | None = None,
         engine_kwargs: dict | None = None,
     ) -> None:
-        """
-        writer : path-like, file-like, or ExcelWriter object
-            File path or existing ExcelWriter
-        sheet_name : str, default 'Sheet1'
-            Name of sheet which will contain DataFrame
-        startrow :
-            upper left cell row to dump data frame
-        startcol :
-            upper left cell column to dump data frame
-        freeze_panes : tuple of integer (length 2), default None
-            Specifies the one-based bottommost row and rightmost column that
-            is to be frozen
-        engine : string, default None
-            write engine to use if writer is a path - you can also set this
-            via the options ``io.excel.xlsx.writer``,
-            or ``io.excel.xlsm.writer``.
-
-        {storage_options}
-
-        engine_kwargs: dict, optional
-            Arbitrary keyword arguments passed to excel engine.
-        """
         from pandas.io.excel import ExcelWriter
-
         num_rows, num_cols = self.df.shape
         if num_rows > self.max_rows or num_cols > self.max_cols:
             raise ValueError(
                 f"This sheet is too large! Your sheet size is: {num_rows}, {num_cols} "
                 f"Max sheet size is: {self.max_rows}, {self.max_cols}"
             )
-
         if engine_kwargs is None:
             engine_kwargs = {}
-
         formatted_cells = self.get_formatted_cells()
         if isinstance(writer, ExcelWriter):
             need_save = False
@@ -960,7 +851,6 @@ class ExcelFormatter:
                 engine_kwargs=engine_kwargs,
             )
             need_save = True
-
         try:
             writer._write_cells(
                 formatted_cells,
@@ -970,6 +860,5 @@ class ExcelFormatter:
                 freeze_panes=freeze_panes,
             )
         finally:
-            # make sure to close opened file handles
             if need_save:
                 writer.close()
